@@ -1,18 +1,28 @@
+import NextAuth from "next-auth"
 import { NextResponse } from "next/server"
-import type { NextRequest } from "next/server"
+import { authConfig } from "@/auth.config"
 
-// TEMPORARY DIAGNOSTIC — reveals the configured auth URL values (the app's own
-// public URL, not secret) to confirm a malformed NEXTAUTH_URL. Reverted after.
-export default function proxy(req: NextRequest) {
-  if (req.nextUrl.pathname === "/__diag3") {
-    return NextResponse.json({
-      NEXTAUTH_URL: process.env.NEXTAUTH_URL ?? null,
-      AUTH_URL: process.env.AUTH_URL ?? null,
-      VERCEL_URL: process.env.VERCEL_URL ?? null,
-    })
+// Build the auth helper from the edge-safe config only. This avoids importing
+// the Prisma adapter / bcrypt (Node-only) into the proxy, which previously
+// crashed before any route could be served.
+const { auth } = NextAuth(authConfig)
+
+export default auth((req) => {
+  const { pathname } = req.nextUrl
+  const isLoggedIn = !!req.auth?.user
+
+  const isAuthPage =
+    pathname.startsWith("/login") || pathname.startsWith("/register")
+  const isApiAuth = pathname.startsWith("/api/auth")
+
+  if (isApiAuth) return NextResponse.next()
+  if (isAuthPage) {
+    if (isLoggedIn) return NextResponse.redirect(new URL("/analyze", req.url))
+    return NextResponse.next()
   }
+  if (!isLoggedIn) return NextResponse.redirect(new URL("/login", req.url))
   return NextResponse.next()
-}
+})
 
 export const config = {
   matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
