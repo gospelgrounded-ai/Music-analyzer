@@ -1,28 +1,26 @@
-import NextAuth from "next-auth"
 import { NextResponse } from "next/server"
-import { authConfig } from "@/auth.config"
+import type { NextRequest } from "next/server"
 
-// Build the auth helper from the edge-safe config only. This avoids importing
-// the Prisma adapter / bcrypt (Node-only) into the proxy, which previously
-// crashed before any route could be served.
-const { auth } = NextAuth(authConfig)
-
-export default auth((req) => {
-  const { pathname } = req.nextUrl
-  const isLoggedIn = !!req.auth?.user
-
-  const isAuthPage =
-    pathname.startsWith("/login") || pathname.startsWith("/register")
-  const isApiAuth = pathname.startsWith("/api/auth")
-
-  if (isApiAuth) return NextResponse.next()
-  if (isAuthPage) {
-    if (isLoggedIn) return NextResponse.redirect(new URL("/analyze", req.url))
-    return NextResponse.next()
+// TEMPORARY DIAGNOSTIC PROXY — reports presence (booleans only, never values)
+// of required env vars on Vercel, and otherwise passes every request through.
+// This is deployed briefly to confirm the production runtime config, then
+// reverted to the real auth-protecting proxy.
+export default function proxy(req: NextRequest) {
+  if (req.nextUrl.pathname === "/__diag") {
+    return NextResponse.json({
+      AUTH_SECRET: !!process.env.AUTH_SECRET,
+      NEXTAUTH_SECRET: !!process.env.NEXTAUTH_SECRET,
+      NEXTAUTH_URL: !!process.env.NEXTAUTH_URL,
+      AUTH_URL: !!process.env.AUTH_URL,
+      DATABASE_URL: !!process.env.DATABASE_URL,
+      DIRECT_URL: !!process.env.DIRECT_URL,
+      ANTHROPIC_API_KEY: !!process.env.ANTHROPIC_API_KEY,
+      VERCEL: process.env.VERCEL ?? null,
+      VERCEL_ENV: process.env.VERCEL_ENV ?? null,
+    })
   }
-  if (!isLoggedIn) return NextResponse.redirect(new URL("/login", req.url))
   return NextResponse.next()
-})
+}
 
 export const config = {
   matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
