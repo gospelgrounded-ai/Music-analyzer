@@ -9,7 +9,7 @@ const { auth } = NextAuth(authConfig)
 
 export default auth((req) => {
   const { pathname } = req.nextUrl
-  const isLoggedIn = !!req.auth
+  const isLoggedIn = !!req.auth?.user
 
   const isAuthPage =
     pathname.startsWith("/login") || pathname.startsWith("/register")
