@@ -15,7 +15,6 @@ export default auth((req) => {
     pathname.startsWith("/login") || pathname.startsWith("/register")
   const isApiAuth = pathname.startsWith("/api/auth")
 
-  if (pathname.startsWith("/api/dbcheck")) return NextResponse.next()
   if (isApiAuth) return NextResponse.next()
   if (isAuthPage) {
     if (isLoggedIn) return NextResponse.redirect(new URL("/analyze", req.url))
