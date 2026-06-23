@@ -7,13 +7,48 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import type { MusicAnalysisRecord } from "@/types/music"
+import type { AudioMetadata, MusicAnalysisRecord } from "@/types/music"
 import { Music2, Upload, X, Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { MAX_UPLOAD_MB, MAX_UPLOAD_BYTES } from "@/lib/upload-limits"
 
-const MAX_MB = 4
-const MAX_BYTES = MAX_MB * 1024 * 1024
 const ACCEPTED = [".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac"]
+
+// Parse audio metadata in the browser so the full file never has to be
+// uploaded (which would hit Vercel's ~4.5 MB request-body limit).
+async function extractMetadata(file: File): Promise<AudioMetadata> {
+  const empty: AudioMetadata = {
+    durationSeconds: null,
+    bitrate: null,
+    sampleRate: null,
+    channels: null,
+    audioFormat: null,
+    bpm: null,
+    embeddedTags: {},
+  }
+  try {
+    const { parseBlob } = await import("music-metadata")
+    const parsed = await parseBlob(file)
+    return {
+      durationSeconds: parsed.format.duration ?? null,
+      bitrate: parsed.format.bitrate ? Math.round(parsed.format.bitrate / 1000) : null,
+      sampleRate: parsed.format.sampleRate ?? null,
+      channels: parsed.format.numberOfChannels ?? null,
+      audioFormat: parsed.format.codec ?? parsed.format.container ?? null,
+      bpm: parsed.common.bpm ?? null,
+      embeddedTags: {
+        title: parsed.common.title ?? null,
+        artist: parsed.common.artist ?? null,
+        album: parsed.common.album ?? null,
+        genre: parsed.common.genre ?? null,
+        year: parsed.common.year ?? null,
+      },
+    }
+  } catch {
+    // Non-fatal: proceed with empty metadata.
+    return empty
+  }
+}
 
 export default function MusicAnalyzerForm() {
   const router = useRouter()
@@ -35,8 +70,8 @@ export default function MusicAnalyzerForm() {
     if (!ACCEPTED.includes(ext)) {
       return `Unsupported format. Accepted: ${ACCEPTED.join(", ")}`
     }
-    if (f.size > MAX_BYTES) {
-      return `File too large. Maximum size is ${MAX_MB} MB.`
+    if (f.size > MAX_UPLOAD_BYTES) {
+      return `File too large. Maximum size is ${MAX_UPLOAD_MB} MB.`
     }
     return null
   }
@@ -65,16 +100,20 @@ export default function MusicAnalyzerForm() {
 
     setIsAnalyzing(true)
     try {
-      const formData = new FormData()
-      formData.append("file", file)
-      if (fields.songTitle) formData.append("songTitle", fields.songTitle)
-      if (fields.artistName) formData.append("artistName", fields.artistName)
-      if (fields.genre) formData.append("genre", fields.genre)
-      if (fields.targetAudience) formData.append("targetAudience", fields.targetAudience)
+      const metadata = await extractMetadata(file)
 
       const res = await fetch("/api/music/analyze", {
         method: "POST",
-        body: formData,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fileName: file.name,
+          fileSize: file.size,
+          songTitle: fields.songTitle || null,
+          artistName: fields.artistName || null,
+          genre: fields.genre || null,
+          targetAudience: fields.targetAudience || null,
+          metadata,
+        }),
       })
 
       if (!res.ok) {
@@ -139,7 +178,7 @@ export default function MusicAnalyzerForm() {
             <div>
               <p className="font-medium">Drop your audio file here</p>
               <p className="text-sm text-muted-foreground mt-0.5">
-                or click to browse · {ACCEPTED.join(", ")} · max {MAX_MB} MB
+                or click to browse · {ACCEPTED.join(", ")} · max {MAX_UPLOAD_MB} MB
               </p>
             </div>
           </div>

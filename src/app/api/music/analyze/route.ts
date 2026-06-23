@@ -1,23 +1,36 @@
 import { NextRequest, NextResponse } from "next/server"
+import { z } from "zod"
 import { auth } from "@/auth"
 import { db } from "@/lib/db"
 import { SYSTEM_PROMPT, buildUserMessage } from "@/lib/music-prompts"
 import type { AudioMetadata, ClaudeAnalysisResult } from "@/types/music"
+import { MAX_UPLOAD_BYTES, MAX_UPLOAD_MB } from "@/lib/upload-limits"
 
 export const maxDuration = 60
 export const dynamic = "force-dynamic"
 
-const ALLOWED_TYPES = new Set([
-  "audio/mpeg",
-  "audio/wav",
-  "audio/flac",
-  "audio/mp4",
-  "audio/x-m4a",
-  "audio/ogg",
-  "audio/aac",
-  "audio/x-wav",
-])
-const MAX_BYTES = 4 * 1024 * 1024 // 4 MB (Vercel free tier limit)
+// The audio file is parsed for metadata in the browser and never uploaded —
+// only this small JSON payload reaches the server. That sidesteps Vercel's
+// ~4.5 MB serverless request-body limit, so songs of any size are supported.
+const metadataSchema = z.object({
+  durationSeconds: z.number().nullable(),
+  bitrate: z.number().nullable(),
+  sampleRate: z.number().nullable(),
+  channels: z.number().nullable(),
+  audioFormat: z.string().nullable(),
+  bpm: z.number().nullable(),
+  embeddedTags: z.record(z.string(), z.unknown()).default({}),
+})
+
+const bodySchema = z.object({
+  fileName: z.string().min(1).max(255),
+  fileSize: z.number().int().nonnegative().max(MAX_UPLOAD_BYTES),
+  songTitle: z.string().max(200).nullish(),
+  artistName: z.string().max(200).nullish(),
+  genre: z.string().max(200).nullish(),
+  targetAudience: z.string().max(2000).nullish(),
+  metadata: metadataSchema,
+})
 
 export async function POST(request: NextRequest) {
   const session = await auth()
@@ -25,71 +38,31 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  let formData: FormData
+  let body: z.infer<typeof bodySchema>
   try {
-    formData = await request.formData()
-  } catch {
-    return NextResponse.json({ error: "Invalid form data" }, { status: 400 })
+    body = bodySchema.parse(await request.json())
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      const issue = err.issues[0]
+      const msg = issue.path[0] === "fileSize"
+        ? `File too large. Maximum size is ${MAX_UPLOAD_MB} MB.`
+        : issue.message
+      return NextResponse.json({ error: msg }, { status: 400 })
+    }
+    return NextResponse.json({ error: "Invalid request" }, { status: 400 })
   }
 
-  const file = formData.get("file")
-  if (!(file instanceof File)) {
-    return NextResponse.json({ error: "Audio file is required" }, { status: 400 })
-  }
+  const { fileName, fileSize, metadata } = body
+  const songTitle = body.songTitle || null
+  const artistName = body.artistName || null
+  const genre = body.genre || null
+  const targetAudience = body.targetAudience || null
 
-  if (!ALLOWED_TYPES.has(file.type) && !file.name.match(/\.(mp3|wav|flac|m4a|ogg|aac)$/i)) {
+  if (!fileName.match(/\.(mp3|wav|flac|m4a|ogg|aac)$/i)) {
     return NextResponse.json(
       { error: "Unsupported format. Please upload MP3, WAV, FLAC, M4A, OGG, or AAC." },
       { status: 400 }
     )
-  }
-
-  if (file.size > MAX_BYTES) {
-    return NextResponse.json(
-      { error: `File too large. Maximum size is ${MAX_BYTES / 1024 / 1024}MB.` },
-      { status: 413 }
-    )
-  }
-
-  const songTitle = formData.get("songTitle")?.toString() || null
-  const artistName = formData.get("artistName")?.toString() || null
-  const genre = formData.get("genre")?.toString() || null
-  const targetAudience = formData.get("targetAudience")?.toString() || null
-
-  const buffer = Buffer.from(await file.arrayBuffer())
-
-  // Extract audio metadata
-  let metadata: AudioMetadata = {
-    durationSeconds: null,
-    bitrate: null,
-    sampleRate: null,
-    channels: null,
-    audioFormat: null,
-    bpm: null,
-    embeddedTags: {},
-  }
-
-  try {
-    const { parseBuffer } = await import("music-metadata")
-    const parsed = await parseBuffer(buffer, { mimeType: file.type })
-    metadata = {
-      durationSeconds: parsed.format.duration ?? null,
-      bitrate: parsed.format.bitrate ? Math.round(parsed.format.bitrate / 1000) : null,
-      sampleRate: parsed.format.sampleRate ?? null,
-      channels: parsed.format.numberOfChannels ?? null,
-      audioFormat: parsed.format.codec ?? parsed.format.container ?? null,
-      bpm: parsed.common.bpm ?? null,
-      embeddedTags: {
-        title: parsed.common.title ?? null,
-        artist: parsed.common.artist ?? null,
-        album: parsed.common.album ?? null,
-        genre: parsed.common.genre ?? null,
-        year: parsed.common.year ?? null,
-      },
-    }
-  } catch (err) {
-    console.error("[MUSIC_METADATA]", err)
-    // Non-fatal: proceed with empty metadata
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY
@@ -98,7 +71,7 @@ export async function POST(request: NextRequest) {
   }
 
   const userMessage = buildUserMessage({
-    fileName: file.name,
+    fileName,
     songTitle,
     artistName,
     genre,
@@ -127,8 +100,8 @@ export async function POST(request: NextRequest) {
     const record = await db.musicAnalysis.create({
       data: {
         userId: session.user.id,
-        fileName: file.name,
-        fileSize: file.size,
+        fileName,
+        fileSize,
         songTitle,
         artistName,
         genre,
