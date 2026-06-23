@@ -6,7 +6,9 @@ import { SYSTEM_PROMPT, buildUserMessage } from "@/lib/music-prompts"
 import type { AudioMetadata, ClaudeAnalysisResult } from "@/types/music"
 import { MAX_UPLOAD_BYTES, MAX_UPLOAD_MB } from "@/lib/upload-limits"
 
-export const maxDuration = 60
+// 300s headroom for the Claude generation. NOTE: this only takes effect on
+// Vercel Pro+ — the Hobby/free plan caps functions at 60s regardless.
+export const maxDuration = 300
 export const dynamic = "force-dynamic"
 
 // The audio file is parsed for metadata in the browser and never uploaded —
@@ -83,12 +85,15 @@ export async function POST(request: NextRequest) {
   try {
     const Anthropic = (await import("@anthropic-ai/sdk")).default
     const anthropic = new Anthropic({ apiKey })
-    const message = await anthropic.messages.create({
+    // Stream the response: keeps the connection active during the long
+    // generation and avoids idle-connection timeouts.
+    const stream = anthropic.messages.stream({
       model: "claude-sonnet-4-6",
       max_tokens: 4096,
       system: SYSTEM_PROMPT,
       messages: [{ role: "user", content: userMessage }],
     })
+    const message = await stream.finalMessage()
     const rawText = message.content[0].type === "text" ? message.content[0].text : "{}"
     claudeResult = JSON.parse(rawText) as ClaudeAnalysisResult
   } catch (err) {
