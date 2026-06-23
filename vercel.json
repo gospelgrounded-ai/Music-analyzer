@@ -1,7 +1,1 @@
-{
-  "functions": {
-    "src/app/api/music/analyze/route.ts": {
-      "maxDuration": 60
-    }
-  }
-}
+{}
