@@ -11,6 +11,18 @@ import { MAX_UPLOAD_BYTES, MAX_UPLOAD_MB } from "@/lib/upload-limits"
 export const maxDuration = 300
 export const dynamic = "force-dynamic"
 
+// Pull the JSON object out of the model's reply, tolerating markdown code
+// fences or stray text around it.
+function extractJson(text: string): string {
+  let t = text.trim()
+  const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  if (fence) t = fence[1].trim()
+  const start = t.indexOf("{")
+  const end = t.lastIndexOf("}")
+  if (start !== -1 && end > start) t = t.slice(start, end + 1)
+  return t
+}
+
 // The audio file is parsed for metadata in the browser and never uploaded —
 // only this small JSON payload reaches the server. That sidesteps Vercel's
 // ~4.5 MB serverless request-body limit, so songs of any size are supported.
@@ -85,17 +97,19 @@ export async function POST(request: NextRequest) {
   try {
     const Anthropic = (await import("@anthropic-ai/sdk")).default
     const anthropic = new Anthropic({ apiKey })
-    // Stream the response: keeps the connection active during the long
-    // generation and avoids idle-connection timeouts.
+    // Haiku 4.5 generates the full structured plan fast enough to finish
+    // well within the function time limit (incl. Vercel's 60s free-plan cap).
+    // Stream to keep the connection active; 8192 tokens avoids truncating
+    // the comprehensive JSON.
     const stream = anthropic.messages.stream({
-      model: "claude-sonnet-4-6",
-      max_tokens: 4096,
+      model: "claude-haiku-4-5",
+      max_tokens: 8192,
       system: SYSTEM_PROMPT,
       messages: [{ role: "user", content: userMessage }],
     })
     const message = await stream.finalMessage()
     const rawText = message.content[0].type === "text" ? message.content[0].text : "{}"
-    claudeResult = JSON.parse(rawText) as ClaudeAnalysisResult
+    claudeResult = JSON.parse(extractJson(rawText)) as ClaudeAnalysisResult
   } catch (err) {
     console.error("[MUSIC_CLAUDE]", err)
     return NextResponse.json({ error: "Analysis generation failed. Please try again." }, { status: 502 })
